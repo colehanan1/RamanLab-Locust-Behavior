@@ -7,6 +7,10 @@ Example:
   To:   Locust/all_vids/2-OCT_ON/08.26.2025/2-OCT_ON_08262025_Training_L1_Trial_1_Recording.mp4
 
 Run in dry-run (preview) mode by default. Use --execute to actually move files.
+
+Safety:
+  Existing YOLO tracking outputs are ignored and left in-place:
+    *_palps_tracks.csv folders and *_palps_annotated_30fps.* videos
 """
 
 import sys
@@ -16,12 +20,30 @@ from pathlib import Path
 
 BASE_DIR = Path("/home/ramanlab/Documents/cole/VSCode/RamanLab-Locust-Behavior/Locust/all_vids")
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.m4v', '.MP4', '.AVI', '.MOV'}
+TRACKING_CSV_SUFFIX = "_palps_tracks.csv"
+TRACKING_VIDEO_SUFFIX = "_palps_annotated_30fps"
 
 
 def find_all_videos(base_dir):
     for p in base_dir.rglob("*"):
         if p.is_file() and p.suffix in VIDEO_EXTENSIONS:
             yield p
+
+
+def is_tracking_artifact_file(p: Path) -> bool:
+    if not p.is_file():
+        return False
+    name = p.name.lower()
+    return name.endswith(TRACKING_CSV_SUFFIX) or TRACKING_VIDEO_SUFFIX in name
+
+
+def find_processed_output_dirs(base_dir: Path):
+    """Return directories that contain existing tracking CSV outputs."""
+    processed_dirs = set()
+    for p in base_dir.rglob("*"):
+        if p.is_file() and p.name.lower().endswith(TRACKING_CSV_SUFFIX):
+            processed_dirs.add(p.parent.resolve())
+    return processed_dirs
 
 
 def target_date_dir(path: Path):
@@ -56,7 +78,15 @@ def unique_target_path(target_dir: Path, name: str) -> Path:
 def move_files(dry_run=True):
     moved = 0
     skipped = 0
+    processed_output_dirs = find_processed_output_dirs(BASE_DIR)
+
     for file in find_all_videos(BASE_DIR):
+        # Do not move previously generated YOLO artifacts.
+        if is_tracking_artifact_file(file):
+            continue
+        if file.parent.resolve() in processed_output_dirs:
+            continue
+
         tdir = target_date_dir(file)
         if tdir is None:
             print(f"Skipping (can't determine date dir): {file}")

@@ -5,8 +5,12 @@ subdirectories and non-video files under each date folder.
 
 Dry-run by default. Use --execute to actually delete.
 
-Keeps: <base>/condition/date/*.mp4 (and other video extensions)
-Removes: any subfolders under a date folder and any non-video files inside date folder.
+Keeps:
+  - <base>/condition/date/*.mp4 (and other video extensions)
+  - previously processed YOLO output folders/files containing:
+      *_palps_tracks.csv
+      *_palps_annotated_30fps.*
+Removes: other subfolders under a date folder and non-video files inside date folder.
 """
 
 import sys
@@ -15,6 +19,8 @@ from pathlib import Path
 
 BASE_DIR = Path("/home/ramanlab/Documents/cole/VSCode/RamanLab-Locust-Behavior/Locust/all_vids")
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.m4v', '.MP4', '.AVI', '.MOV'}
+TRACKING_CSV_SUFFIX = "_palps_tracks.csv"
+TRACKING_VIDEO_SUFFIX = "_palps_annotated_30fps"
 
 
 def unique_target_path(target_dir: Path, name: str) -> Path:
@@ -36,6 +42,35 @@ def is_video(p: Path) -> bool:
     return p.is_file() and p.suffix in VIDEO_EXTENSIONS
 
 
+def is_tracking_artifact_file(p: Path) -> bool:
+    if not p.is_file():
+        return False
+    name = p.name.lower()
+    return name.endswith(TRACKING_CSV_SUFFIX) or TRACKING_VIDEO_SUFFIX in name
+
+
+def find_preserved_output_dirs(date_dir: Path):
+    """Find top-level dirs under date_dir that contain tracking artifacts."""
+    keep_dirs = set()
+    for p in date_dir.rglob("*"):
+        if not is_tracking_artifact_file(p):
+            continue
+        rel = p.relative_to(date_dir)
+        if len(rel.parts) >= 2:
+            top_dir = date_dir / rel.parts[0]
+            if top_dir.is_dir():
+                keep_dirs.add(top_dir.resolve())
+    return keep_dirs
+
+
+def is_under_preserved_dir(path: Path, preserved_dirs) -> bool:
+    resolved = path.resolve()
+    for d in preserved_dirs:
+        if resolved == d or d in resolved.parents:
+            return True
+    return False
+
+
 def process(dry_run=True):
     actions = []
     # iterate condition folders
@@ -49,10 +84,15 @@ def process(dry_run=True):
         for date_dir in sorted(cond.iterdir()):
             if not date_dir.is_dir():
                 continue
+            preserved_dirs = find_preserved_output_dirs(date_dir)
+
             # 1) Move any videos from subfolders into date_dir
             for f in date_dir.rglob("*"):
                 if is_video(f):
                     if f.parent.resolve() != date_dir.resolve():
+                        # Keep previously processed output folders untouched.
+                        if is_under_preserved_dir(f, preserved_dirs):
+                            continue
                         target = date_dir / f.name
                         if target.exists():
                             target = unique_target_path(date_dir, f.name)
@@ -60,8 +100,12 @@ def process(dry_run=True):
             # 2) Delete subdirectories under date_dir
             for child in sorted(date_dir.iterdir()):
                 if child.is_dir():
+                    if child.resolve() in preserved_dirs:
+                        continue
                     actions.append(("rmdir", child, None))
                 elif child.is_file():
+                    if is_tracking_artifact_file(child):
+                        continue
                     # if not a video file, schedule delete
                     if not is_video(child):
                         actions.append(("unlink", child, None))
